@@ -1,5 +1,6 @@
 body {
   font-family: "Raleway", sans-serif;
+  overflow-x: hidden;
 }
 
 /* Hero Section */
@@ -27,13 +28,54 @@ body {
   color: #373a3c;
 }
 
+/* Celular */
+
 @media (max-width: 768px) {
   #Contacto form label {
     font-weight: 400;
   }
 
-  .navbar-brand{
+  .navbar-brand {
     width: 100px;
   }
 
+  /* el fondo se recorta menos y el texto se lee sobre la imagen */
+  #Hero-Section {
+    background-position: center;
+    position: relative;
+  }
+
+  #Hero-Section::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.45);
+  }
+
+  #Hero-Section .container {
+    position: relative;
+  }
+
+  /* display-1 es ilegible en pantallas chicas */
+  #Hero-Section h1 {
+    font-size: 2.75rem;
+  }
+
+  #Hero-Section .mb-5.pb-5 {
+    padding-bottom: 1rem !important;
+  }
+
+  #Acerca-de-mi h2,
+  #Mis-trabajos h2,
+  #Contacto h2 {
+    font-size: 2.25rem;
+  }
+
+  #Acerca-de-mi .fa-7x {
+    font-size: 4rem;
+  }
+
+  #Mis-trabajos .image-top {
+    height: 200px;
+  }
 }
