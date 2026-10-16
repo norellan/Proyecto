@@ -169,7 +169,10 @@ async function leerAsientos(page) {
         numero: li.querySelector(sel.numeroAsiento).innerText.trim(),
         libre: Boolean(li.querySelector(sel.asientoDisponible)),
       }))), SELECTORES);
-    for (const fila of filas) fila.forEach((a, j) => asientos.push({ ...a, piso, ventana: j === 0 || j === fila.length - 1 }));
+    // Cada fila tiene dos pares (ventana + pasillo) a cada lado del pasillo central.
+    filas.forEach((fila, f) => fila.forEach((a, j) => asientos.push({
+      ...a, piso, ventana: j === 0 || j === fila.length - 1, par: `${piso}-${f}-${j < fila.length / 2 ? 'a' : 'b'}`,
+    })));
   }
   return asientos;
 }
@@ -262,6 +265,9 @@ async function main() {
       await page.locator(SELECTORES.mapaAsientos).first().screenshot({ path: ruta('./capturas/asientos.png') });
       resultado.ok = true;
       log(`Asientos libres: ${resultado.asientosLibres.map((a) => a.numero + (a.ventana ? 'v' : '')).join(', ')}  (v = ventana)`);
+      const pares = Object.values(Object.groupBy(resultado.asientosLibres, (a) => a.par)).filter((g) => g.length === 2);
+      resultado.paresJuntos = pares.map((g) => g.map((a) => a.numero));
+      log(`Pares juntos libres (ventana + pasillo): ${resultado.paresJuntos.map((g) => g.join('-')).join(', ') || 'ninguno'}`);
       return;
     }
 

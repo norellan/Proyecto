@@ -10,7 +10,7 @@ Cuando el usuario pida comprar o buscar pasajes Tur Bus (por ejemplo, "cómprame
    1. **Día → horarios:** `cd turbus-bot && npm run comprar -- --fecha AAAA-MM-DD --listar`. Muéstrale `resultado.json.servicios` (hora, precio, agotado) como lista y envíale `capturas/horarios.png`.
    2. **Hora → asientos:** `npm run comprar -- --fecha AAAA-MM-DD --salida HH:MM --ver-asientos`. Muéstrale `asientosLibres` (marca los de ventana) y envíale `capturas/asientos.png`.
    3. **Asientos → pago:** `npm run comprar -- --fecha AAAA-MM-DD --salida HH:MM --numeros 8,12` (un número por pasajero).
-   Opciones: `--piso 1|2` (solo ese piso), `--empresa Turbus` (hay buses de Cóndor Bus en la misma ruta y a veces a la misma hora). En `asientosLibres`, `ventana: true` marca la ventana.
+   Opciones: `--piso 1|2` (solo ese piso), `--empresa Turbus` (hay buses de Cóndor Bus en la misma ruta y a veces a la misma hora). En `asientosLibres`, `ventana: true` marca la ventana; `paresJuntos` lista los pares libres lado a lado (ventana + pasillo).
    Si el usuario quiere ir rápido: `npm run comprar -- --fecha AAAA-MM-DD --hora HH:MM --pasajes N` elige sola la salida más cercana y asientos de ventana.
 4. Lee `turbus-bot/capturas/resultado.json` y envíale al usuario `capturas/antes-de-pagar.png` (o `capturas/error.png`) con SendUserFile, junto con la salida, los asientos y `linkBusqueda`.
    El navegador corre en la nube: el usuario no puede pagar ahí, y Tur Bus retiene los asientos solo unos 9 minutos (`reservaVence`). Si el usuario está en el celular, lo práctico es darle `linkBusqueda` y decirle qué salida y asiento tomar para que pague él.
