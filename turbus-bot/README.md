@@ -51,8 +51,12 @@ npm run comprar -- --fecha 2026-10-23 --salida 11:00 --ver-asientos      # 2) as
 npm run comprar -- --fecha 2026-10-23 --salida 11:00 --numeros 12,13     # 3) toma esos asientos → página de pago
 ```
 
+Opciones extra: `--piso 1` (solo el primer piso) y `--empresa Turbus` (la búsqueda también muestra buses de Cóndor Bus).
+
 Cada paso deja `capturas/resultado.json` y una captura (`horarios.png`, `asientos.png`, `antes-de-pagar.png`).
 
 ## Prueba
 
-`npm test` recorre el flujo completo contra `test/sitio-simulado.html`, un sitio local que imita el proceso de compra.
+`npm test` recorre el flujo completo contra `test/sitio-simulado.html`, un sitio local que copia la estructura real de turbus.cl (tarjetas de servicio, mapa de asientos por piso, formulario de pasajeros). Los selectores también se probaron en vivo contra turbus.cl el 16-10-2026: búsqueda, horarios, mapa de asientos y formulario de pasajeros.
+
+Nota: turbus.cl rechaza los navegadores que se identifican como `HeadlessChrome`, por eso el script usa el user-agent de un Chrome normal.

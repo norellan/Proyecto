@@ -1,41 +1,38 @@
 <!doctype html>
 <html lang="es"><head><meta charset="utf-8"><title>Sitio simulado (pruebas)</title>
-<style>.seat{display:inline-block;width:32px;margin:2px;border:1px solid #333;text-align:center;cursor:pointer}.occupied{background:#999}</style>
+<style>li{display:inline-block;width:30px;cursor:pointer}ul{display:block}</style>
 </head><body>
-<!-- Imita a grandes rasgos el flujo de compra; NO es el sitio real de Tur Bus. -->
-<div id="cookies"><button>Aceptar</button></div>
-<section id="busqueda">
-  <label>Origen <input id="origen" list="x" autocomplete="off"></label>
-  <label>Destino <input id="destino" autocomplete="off"></label>
-  <ul id="sug"></ul>
-  <label>Fecha de ida <input id="fecha" placeholder="dd/mm/aaaa"></label>
-  <button id="buscar">Buscar</button>
-</section>
-<section id="servicios" hidden></section>
-<section id="asientos" hidden><div id="mapa"></div><button id="cont">Continuar</button></section>
-<section id="pasajero" hidden>
-  <label>Nombre <input></label><label>Apellido <input></label><label>RUT <input></label>
-  <label>Correo <input></label><label>Teléfono <input></label>
-  <h2>Total a pagar: $8.900</h2><button>Ir a Webpay</button>
-</section>
+<!-- Imita la estructura real de turbus.cl (clases y flujo) para probar comprar.js sin conexión. NO es el sitio real. -->
+<div class="services-list-container" id="lista"></div>
+<div id="booking" hidden>
+  <div class="countdown-counter"><span>08:59</span></div>
+  <div id="filas"></div>
+  <table class="passenger-input-personal-details"><tr>
+    <td><input type="email"></td><td><input type="email"></td><td><input type="tel" placeholder="9XXXXXXXX"></td></tr></table>
+  <div class="webpay-payment-method"><label><input type="radio" id="wp"></label><img alt="webpay_logo_new"></div>
+  <button>PAGAR</button>
+</div>
 <script>
-const ciudades=['Santiago (Terminal Alameda)','Santiago (Terminal San Borja)','El Tabo','El Quisco','Algarrobo'];
-document.querySelector('#cookies button').onclick=()=>document.getElementById('cookies').remove();
-let activo;
-for (const id of ['origen','destino']) document.getElementById(id).addEventListener('input',e=>{
-  activo=e.target; const q=e.target.value.toLowerCase(); const ul=document.getElementById('sug'); ul.innerHTML='';
-  if(q.length<2) return;
-  ciudades.filter(c=>c.toLowerCase().includes(q)).forEach(c=>{const li=document.createElement('li');li.setAttribute('role','option');li.textContent=c;li.onclick=()=>{activo.value=c;ul.innerHTML='';};ul.appendChild(li);});
+const servicios = [['07:30','09:30','Turbus','$6.500',true],['08:45','10:45','Turbus','$6.500'],['08:45','10:30','Cóndor Bus','$5.500'],['11:00','13:00','Turbus','$7.500']];
+const ocupados = [1, 4, 5, 18];
+const params = new URLSearchParams(location.search);
+const ok = /santiago,-chile\/el-tabo,-chile/.test(location.pathname) && params.get('date_onward') === '23-10-2026';
+lista.innerHTML = ok ? servicios.map(([s, l, e, p, ag]) => `<div class="service-item_service_item_outer__X"><div>Salida Vie, 23/10 ${s} AM Llegada ${l} AM Semi Cama Desde ${p} ${ag ? 'Agotado' : ''}<button class="kupos-button"><span>COMPRAR</span></button> ${e}</div></div>`).join('') : '';
+document.querySelectorAll('.kupos-button').forEach((b) => b.onclick = () => {
+  const piso = (desde) => Array.from({ length: 4 }, (_, f) => { const n = desde + f * 4;
+    return `<ul>${[n, n + 1, null, n + 3, n + 2].map((x) => x === null ? '<li class="gw"> </li>' :
+      `<li><span class="seat-number-css">${x}</span><div class="seat-sprite ${ocupados.includes(x) ? 'icon-seat_reserved' : 'icon-seat_available'}"></div></li>`).join('')}</ul>`; }).join('');
+  b.closest('.service-item_service_item_outer__X').insertAdjacentHTML('beforeend', `<div class="coach-layout-container">
+    <div class="floor-buttons"><a id="p1">Piso #1</a><a id="p2">Piso #2</a></div><div class="coach-table" id="tabla">${piso(1)}</div>
+    <div id="continuar">CONTINUAR: <span id="n">0</span></div></div>`);
+  const sel = new Set();
+  const pintar = (desde) => { tabla.innerHTML = piso(desde); tabla.querySelectorAll('li:has(.seat-number-css)').forEach((li) => li.onclick = () => {
+    if (li.querySelector('[class*="_available"]')) { sel.add(li.innerText.trim()); n.textContent = sel.size; } }); };
+  pintar(1); p1.onclick = () => pintar(1); p2.onclick = () => pintar(17);
+  continuar.onclick = () => {
+    if (!sel.size) return;
+    lista.hidden = true; booking.hidden = false; document.body.dataset.asientos = [...sel].join(',');
+    filas.innerHTML = [...sel].map(() => '<div class="local-inputs-details"><div class="rut-input"><input></div><div class="name-input"><input></div><div class="name-input"><input></div></div>').join('');
+  };
 });
-document.getElementById('buscar').onclick=()=>{
-  const ok=/santiago/i.test(origen.value)&&/tabo/i.test(destino.value)&&/^\d\d\/\d\d\/\d{4}$/.test(fecha.value);
-  const s=document.getElementById('servicios'); s.hidden=false;
-  if(!ok){s.textContent='Datos de búsqueda inválidos';return;}
-  s.innerHTML=[['07:30','Agotado'],['08:45','12 asientos'],['11:00','20 asientos'],['15:30','5 asientos']].map(([h,d])=>
-    `<div class="service-card"><b>${h}</b> Santiago → El Tabo · ${d} · $8.900 <button>Seleccionar</button></div>`).join('');
-  s.querySelectorAll('button').forEach(b=>b.onclick=()=>{s.dataset.elegido=b.parentElement.querySelector('b').textContent;document.getElementById('asientos').hidden=false;
-    mapa.innerHTML=Array.from({length:20},(_,i)=>`<span class="seat ${[1,4,5].includes(i+1)?'occupied':''}">${i+1}</span>`).join('');
-    mapa.querySelectorAll('.seat:not(.occupied)').forEach(x=>x.onclick=()=>x.classList.toggle('selected'));});
-};
-cont.onclick=()=>{document.getElementById('pasajero').hidden=false;};
 </script></body></html>

@@ -1,48 +1,53 @@
-// Automatiza la compra de pasajes en Tur Bus hasta la página de pago.
-// El pago (Webpay / tarjeta) lo confirmas tú en la ventana del navegador:
-// el script nunca ingresa datos de tarjeta ni confirma cobros.
+// Automatiza la compra de pasajes en turbus.cl hasta la página de pago.
+// El pago (aceptar términos, PAGAR y Webpay) lo haces tú: el script nunca
+// acepta términos, ni presiona PAGAR, ni ingresa datos de tarjeta.
 //
 // Uso:
 //   npm install
 //   cp config.ejemplo.json config.json   # y edita tus datos
-//   npm run comprar -- --fecha 2026-10-23 --hora 09:00 --pasajes 1
 //
-// Funciona en tu computador (Chrome visible, espera tu Enter) y en una sesión
-// de Claude en la nube (sin pantalla: corre headless, no espera teclado y deja
-// capturas + resultado.json en capturas/).
+//   npm run comprar -- --fecha 2026-10-23 --listar                        # 1) horarios del día
+//   npm run comprar -- --fecha 2026-10-23 --salida 09:00 --ver-asientos   # 2) asientos libres
+//   npm run comprar -- --fecha 2026-10-23 --salida 09:00 --numeros 1,3    # 3) asientos → página de pago
+//   npm run comprar -- --fecha 2026-10-23 --hora 09:00 --pasajes 2 --piso 1   # todo automático
 //
-// Datos: config.json, o la variable de entorno TURBUS_CONFIG con el mismo JSON
-// (útil como secreto del entorno en la nube). Los argumentos --origen, --destino,
-// --fecha, --hora, --pasajes y --asiento sobrescriben lo del config.
+// Funciona en tu computador (Chrome visible, espera tu Enter para que pagues) y
+// en una sesión de Claude en la nube (headless, sin teclado; deja capturas y
+// capturas/resultado.json).
 //
-// Si Tur Bus cambia su sitio, ajusta los textos/selectores del bloque SELECTORES
-// (puedes descubrirlos con `npm run grabar`).
+// Datos: config.json, o la variable de entorno TURBUS_CONFIG con el mismo JSON.
+// Si turbus.cl cambia, ajusta el bloque SELECTORES (`npm run grabar` ayuda).
 
 import { chromium } from 'playwright';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 
-const URL_INICIO = process.env.TURBUS_URL || 'https://www.turbus.cl/';
+const URL_BASE = (process.env.TURBUS_URL || 'https://www.turbus.cl/').replace(/\/?$/, '/');
+// turbus.cl rechaza las llamadas a su API si el navegador se identifica como "HeadlessChrome".
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 
 const SELECTORES = {
-  origen: [/origen/i, /desde/i],
-  destino: [/destino/i, /hacia/i],
-  fecha: [/fecha.*ida/i, /ida/i, /fecha/i],
-  botonBuscar: /buscar/i,
-  // Cada servicio listado en los resultados
-  tarjetaServicio: '[class*="service"], [class*="servicio"], [class*="trip"], [class*="viaje"]',
-  botonElegirServicio: /seleccionar|elegir|comprar|ver asientos/i,
-  asientoLibre: '[class*="seat"]:not([class*="occupied"]):not([class*="ocupado"]):not([class*="disabled"]), [class*="asiento"][class*="disponible"]',
-  botonContinuar: /continuar|siguiente|confirmar asientos|ir a pagar/i,
-  campos: {
-    nombre: /^nombre/i,
-    apellido: /apellido/i,
-    rut: /rut|documento/i,
-    email: /correo|e-?mail/i,
-    telefono: /tel[eé]fono|celular|m[oó]vil/i,
+  servicio: '[class*="service-item_service_item_outer"]',
+  botonComprar: /^\s*comprar\s*$/i,
+  mapaAsientos: '.coach-layout-container',
+  pisos: '.floor-buttons a',
+  filaAsientos: '.coach-table ul',
+  asiento: 'li:has(.seat-number-css)',
+  numeroAsiento: '.seat-number-css',
+  asientoDisponible: '[class*="_available"]',
+  botonContinuar: /^\s*continuar/i,
+  pasajero: {
+    fila: '.local-inputs-details',
+    documento: '.rut-input input',
+    nombre: '.name-input input', // 1º nombre, 2º apellido
   },
-  indicadoresPago: /webpay|medio de pago|pagar|total a pagar/i,
+  contacto: {
+    email: '.passenger-input-personal-details input[type="email"]', // 1º correo, 2º confirmación
+    telefono: '.passenger-input-personal-details input[type="tel"]',
+  },
+  webpay: '.webpay-payment-method:has(img[alt*="webpay"]) label',
+  contador: '.countdown-counter',
 };
 
 const ruta = (p) => new URL(p, import.meta.url).pathname;
@@ -52,17 +57,18 @@ function cargarConfig() {
     options: {
       config: { type: 'string' }, origen: { type: 'string' }, destino: { type: 'string' },
       fecha: { type: 'string' }, hora: { type: 'string' }, pasajes: { type: 'string' }, asiento: { type: 'string' },
-      // Elección paso a paso (útil desde el chat / celular):
+      empresa: { type: 'string' },         // filtra por empresa (ej: Turbus, "Cóndor Bus")
+      piso: { type: 'string' },            // solo asientos de ese piso (1 o 2)
       listar: { type: 'boolean' },         // 1) solo lista los horarios del día
       salida: { type: 'string' },          // 2) toma exactamente ese horario (HH:MM)
       'ver-asientos': { type: 'boolean' }, //    ...y solo lista los asientos libres
-      numeros: { type: 'string' },         // 3) toma esos asientos (ej: 8,12) y avanza hasta el pago
+      numeros: { type: 'string' },         // 3) toma esos asientos (ej: 1,3) y avanza hasta el pago
     },
   });
-  const archivo = values.config ? values.config : ruta('./config.json');
+  const archivo = values.config ?? ruta('./config.json');
   const base = process.env.TURBUS_CONFIG
     ? JSON.parse(process.env.TURBUS_CONFIG)
-    : existsSync(archivo) ? JSON.parse(readFileSync(archivo, 'utf8')) : JSON.parse(readFileSync(ruta('./config.ejemplo.json'), 'utf8'));
+    : JSON.parse(readFileSync(existsSync(archivo) ? archivo : ruta('./config.ejemplo.json'), 'utf8'));
   const c = {
     ...base,
     ...(values.origen && { origen: values.origen }),
@@ -71,151 +77,149 @@ function cargarConfig() {
     ...(values.hora && { horaPreferida: values.hora }),
     ...(values.pasajes && { cantidadPasajes: Number(values.pasajes) }),
     ...(values.asiento && { preferenciaAsiento: values.asiento }),
+    ...(values.empresa && { empresa: values.empresa }),
+    ...(values.piso && { piso: Number(values.piso) }),
     listar: Boolean(values.listar),
     salida: values.salida,
     verAsientos: Boolean(values['ver-asientos']),
     numeros: values.numeros ? values.numeros.split(',').map((n) => n.trim()).filter(Boolean) : null,
   };
   if (c.numeros) c.cantidadPasajes = c.numeros.length;
-  if (c.salida && !/^\d{1,2}:\d{2}$/.test(c.salida)) throw new Error(`Salida inválida "${c.salida}" (usa HH:MM)`);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(c.fecha)) throw new Error(`Fecha inválida "${c.fecha}" (usa AAAA-MM-DD)`);
-  if (!/^\d{1,2}:\d{2}$/.test(c.horaPreferida)) throw new Error(`Hora inválida "${c.horaPreferida}" (usa HH:MM)`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(c.fecha ?? '')) throw new Error(`Fecha inválida "${c.fecha}" (usa AAAA-MM-DD)`);
+  for (const h of [c.horaPreferida, c.salida]) if (h && !/^\d{1,2}:\d{2}$/.test(h)) throw new Error(`Hora inválida "${h}" (usa HH:MM)`);
   if (c.pasajeros.length < c.cantidadPasajes) throw new Error(`Faltan datos: ${c.cantidadPasajes} pasajes pero ${c.pasajeros.length} pasajeros`);
   return c;
 }
 
 const config = cargarConfig();
 // Sin pantalla (sesión en la nube) → headless y sin esperar el teclado.
-const interactivo = process.stdin.isTTY && !process.env.CI && process.env.HEADLESS !== '1';
 const headless = process.env.HEADLESS === '1' || (process.platform === 'linux' && !process.env.DISPLAY);
+const interactivo = !headless && process.stdin.isTTY;
 mkdirSync(ruta('./capturas/'), { recursive: true });
 
 const log = (...m) => console.log('›', ...m);
-
-async function primerVisible(page, candidatos) {
-  for (const c of candidatos) {
-    for (const loc of [page.getByLabel(c), page.getByPlaceholder(c), page.getByRole('combobox', { name: c }), page.getByRole('textbox', { name: c })]) {
-      const l = loc.first();
-      if (await l.isVisible().catch(() => false)) return l;
-    }
-  }
-  throw new Error(`No encontré el campo ${candidatos.join(' / ')}`);
-}
-
-async function elegirCiudad(page, candidatos, ciudad) {
-  const campo = await primerVisible(page, candidatos);
-  await campo.click();
-  await campo.fill('');
-  await campo.pressSequentially(ciudad, { delay: 80 });
-  const opcion = page.getByRole('option', { name: new RegExp(ciudad, 'i') })
-    .or(page.locator('li, [class*="option"], [class*="suggest"]').filter({ hasText: new RegExp(ciudad, 'i') }))
-    .first();
-  await opcion.waitFor({ timeout: 10_000 });
-  await opcion.click();
-  log(`Ciudad elegida: ${ciudad}`);
-}
-
-async function elegirFecha(page, fechaISO) {
-  const [a, m, d] = fechaISO.split('-');
-  const campo = await primerVisible(page, SELECTORES.fecha);
-  // Primero intenta escribir la fecha; si es un calendario, hace clic en el día.
-  try {
-    await campo.fill(`${d}/${m}/${a}`, { timeout: 3000 });
-    await campo.press('Enter');
-  } catch {
-    await campo.click();
-    const meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-    const mesBuscado = new RegExp(`${meses[Number(m) - 1]}.*${a}`, 'i');
-    for (let i = 0; i < 12 && !(await page.getByText(mesBuscado).first().isVisible().catch(() => false)); i++) {
-      await page.getByRole('button', { name: /siguiente|next|›|>/i }).first().click();
-    }
-    await page.getByRole('button', { name: new RegExp(`^${Number(d)}$`) })
-      .or(page.locator('[class*="day"]:not([class*="disabled"])').getByText(new RegExp(`^${Number(d)}$`)))
-      .first().click();
-  }
-  log(`Fecha elegida: ${fechaISO}`);
-}
-
 const minutos = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+const sinTildes = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+// "Santiago" → "santiago,-chile" ; "El Tabo" → "el-tabo,-chile"
+const slugCiudad = (ciudad) => `${ciudad.replace(/,.*$/, '').trim().toLowerCase().replace(/\s+/g, '-')},-chile`;
+
+function urlBusqueda() {
+  const [a, m, d] = config.fecha.split('-');
+  return `${URL_BASE}es/pasajes-bus/${slugCiudad(config.origen)}/${slugCiudad(config.destino)}?date_onward=${d}-${m}-${a}`;
+}
+
+async function buscar(page) {
+  resultado.linkBusqueda = urlBusqueda();
+  await page.goto(resultado.linkBusqueda, { waitUntil: 'domcontentloaded' });
+  const hay = await page.locator(SELECTORES.servicio).first().waitFor({ timeout: 45_000 }).then(() => true, () => false);
+  if (!hay) throw new Error(`No hay servicios ${config.origen} → ${config.destino} el ${config.fecha} (o cambió el sitio)`);
+  log(`Búsqueda: ${config.origen} → ${config.destino}, ${config.fecha}`);
+}
 
 async function leerServicios(page) {
-  await page.locator(SELECTORES.tarjetaServicio).first().waitFor({ timeout: 30_000 });
-  const tarjetas = page.locator(SELECTORES.tarjetaServicio).filter({ hasText: /\d{1,2}:\d{2}/ });
-  const servicios = [];
-  for (let i = 0; i < (await tarjetas.count()); i++) {
-    const texto = (await tarjetas.nth(i).innerText()).replace(/\s+/g, ' ').trim();
-    const hora = texto.match(/\b(\d{1,2}:\d{2})\b/)?.[1];
-    if (!hora) continue;
-    servicios.push({
-      i, hora,
-      agotado: /agotado|sin asientos/i.test(texto),
-      precio: texto.match(/\$\s?[\d.]+/)?.[0] ?? null,
-      detalle: texto.replace(/seleccionar|elegir|comprar|ver asientos/gi, '').trim(),
-    });
-  }
-  if (!servicios.length) throw new Error('No hay servicios para esa fecha');
-  return { tarjetas, servicios };
+  const textos = await page.locator(SELECTORES.servicio).evaluateAll((els) => els.map((e) => e.innerText));
+  return textos.map((texto, i) => {
+    const t = texto.replace(/\s+/g, ' ');
+    const [salida, llegada] = t.match(/\b\d{1,2}:\d{2}\b/g) ?? [];
+    return {
+      i,
+      hora: salida,
+      llegada,
+      empresa: t.match(/\b(Turbus|Tur Bus|C[oó]ndor Bus|Pullman Bus)\b/i)?.[1] ?? null,
+      precio: t.match(/\$\s?[\d.]+/)?.[0] ?? null,
+      clase: t.match(/Semi Cama|Sal[oó]n Cama|Cama|Premium|Ejecutivo/i)?.[0] ?? null,
+      agotado: /agotado|sin asientos/i.test(t),
+    };
+  }).filter((s) => s.hora && (!config.empresa || sinTildes(s.empresa ?? '').includes(sinTildes(config.empresa))));
 }
 
 async function elegirServicio(page) {
-  const { tarjetas, servicios } = await leerServicios(page);
-  const disponibles = servicios.filter((s) => !s.agotado);
-  let mejor;
+  const servicios = await leerServicios(page);
+  if (!servicios.length) throw new Error('No hay servicios (revisa --empresa)');
+  let elegido;
   if (config.salida) {
-    mejor = servicios.find((s) => minutos(s.hora) === minutos(config.salida));
-    if (!mejor) throw new Error(`No hay salida a las ${config.salida}. Horarios: ${servicios.map((s) => s.hora).join(', ')}`);
-    if (mejor.agotado) throw new Error(`La salida de las ${config.salida} está agotada`);
+    const coinciden = servicios.filter((s) => minutos(s.hora) === minutos(config.salida));
+    if (!coinciden.length) throw new Error(`No hay salida a las ${config.salida}. Horarios: ${servicios.map((s) => s.hora).join(', ')}`);
+    elegido = coinciden.find((s) => !s.agotado);
+    if (!elegido) throw new Error(`La salida de las ${config.salida} está agotada`);
+    if (coinciden.length > 1 && !config.empresa) log(`Ojo: hay ${coinciden.length} buses a las ${config.salida}; tomo ${elegido.empresa} (usa --empresa para elegir)`);
   } else {
+    const disponibles = servicios.filter((s) => !s.agotado);
     if (!disponibles.length) throw new Error('Todos los servicios están agotados');
     const objetivo = minutos(config.horaPreferida);
-    mejor = disponibles.reduce((a, b) => (Math.abs(minutos(b.hora) - objetivo) < Math.abs(minutos(a.hora) - objetivo) ? b : a));
+    elegido = disponibles.reduce((a, b) => (Math.abs(minutos(b.hora) - objetivo) < Math.abs(minutos(a.hora) - objetivo) ? b : a));
   }
-  log(`Servicio elegido: salida ${mejor.hora}${config.salida ? '' : ` (preferida ${config.horaPreferida})`}`);
-  resultado.salida = mejor.hora;
-  const tarjeta = tarjetas.nth(mejor.i);
-  const boton = tarjeta.getByRole('button', { name: SELECTORES.botonElegirServicio });
-  await ((await boton.count()) ? boton.first() : tarjeta).click();
+  Object.assign(resultado, { salida: elegido.hora, llegada: elegido.llegada, empresa: elegido.empresa, precio: elegido.precio });
+  log(`Servicio: ${elegido.hora} → ${elegido.llegada} · ${elegido.empresa} · ${elegido.precio}`);
+  await page.locator(SELECTORES.servicio).nth(elegido.i).getByText(SELECTORES.botonComprar).click();
+  await page.locator(SELECTORES.mapaAsientos).first().waitFor({ timeout: 30_000 });
 }
 
-async function leerAsientosLibres(page) {
-  const libres = page.locator(SELECTORES.asientoLibre);
-  await libres.first().waitFor({ timeout: 30_000 });
-  const numeros = [];
-  for (let i = 0; i < (await libres.count()); i++) numeros.push((await libres.nth(i).innerText().catch(() => '')).trim());
-  return { libres, numeros };
+// Recorre los pisos y devuelve los asientos con su estado. En cada fila (<ul>)
+// el primer y el último asiento van junto a la ventana.
+async function leerAsientos(page) {
+  const pisos = page.locator(SELECTORES.pisos);
+  const nPisos = Math.max(1, await pisos.count());
+  const asientos = [];
+  for (let piso = 1; piso <= nPisos; piso++) {
+    if (nPisos > 1) { await pisos.nth(piso - 1).click(); await page.waitForTimeout(400); }
+    const filas = await page.locator(SELECTORES.filaAsientos).evaluateAll((uls, sel) => uls.map((ul) =>
+      [...ul.querySelectorAll(sel.asiento)].map((li) => ({
+        numero: li.querySelector(sel.numeroAsiento).innerText.trim(),
+        libre: Boolean(li.querySelector(sel.asientoDisponible)),
+      }))), SELECTORES);
+    for (const fila of filas) fila.forEach((a, j) => asientos.push({ ...a, piso, ventana: j === 0 || j === fila.length - 1 }));
+  }
+  return asientos;
 }
 
-const esVentana = (n) => Number(n) > 0 && (Number(n) % 4 === 1 || Number(n) % 4 === 0);
+async function marcarAsiento(page, asiento, nPisos) {
+  if (nPisos > 1) { await page.locator(SELECTORES.pisos).nth(asiento.piso - 1).click(); await page.waitForTimeout(400); }
+  await page.locator(`${SELECTORES.filaAsientos} ${SELECTORES.asiento}`)
+    .filter({ has: page.locator(SELECTORES.numeroAsiento, { hasText: new RegExp(`^\\s*${asiento.numero}\\s*$`) }) })
+    .first().click();
+  await page.waitForTimeout(300);
+}
 
 async function elegirAsientos(page) {
-  const { libres, numeros } = await leerAsientosLibres(page);
-  let elegidos = config.numeros;
-  if (elegidos) {
-    const ocupados = elegidos.filter((n) => !numeros.includes(n));
-    if (ocupados.length) throw new Error(`Asiento(s) ${ocupados.join(', ')} no disponibles. Libres: ${numeros.join(', ')}`);
+  const asientos = await leerAsientos(page);
+  const nPisos = new Set(asientos.map((a) => a.piso)).size;
+  const libres = asientos.filter((a) => a.libre && (!config.piso || a.piso === config.piso));
+  let elegidos;
+  if (config.numeros) {
+    const faltan = config.numeros.filter((n) => !libres.some((a) => a.numero === n));
+    if (faltan.length) throw new Error(`Asiento(s) ${faltan.join(', ')} no disponibles. Libres: ${libres.map((a) => a.numero).join(', ')}`);
+    elegidos = config.numeros.map((n) => libres.find((a) => a.numero === n));
   } else {
-    // Asientos de ventana: en buses 2+2 suelen ser los números ≡ 1 o 0 (mod 4).
-    const prioridad = (n) => (config.preferenciaAsiento === 'ventana' && esVentana(n) ? 0 : 1);
-    elegidos = [...numeros].sort((x, y) => prioridad(x) - prioridad(y)).slice(0, config.cantidadPasajes);
+    const prioridad = (a) => (config.preferenciaAsiento === 'ventana' && a.ventana ? 0 : 1);
+    elegidos = [...libres].sort((x, y) => prioridad(x) - prioridad(y) || x.piso - y.piso || Number(x.numero) - Number(y.numero)).slice(0, config.cantidadPasajes);
+    if (elegidos.length < config.cantidadPasajes) throw new Error(`Solo quedan ${libres.length} asientos libres${config.piso ? ` en el piso ${config.piso}` : ''}`);
   }
-  for (const n of elegidos) {
-    // Se busca por número (no por índice) porque al marcar un asiento la lista de libres puede cambiar.
-    await libres.filter({ hasText: new RegExp(`^\\s*${n}\\s*$`) }).first().click();
-    resultado.asientos.push(n);
-    log(`Asiento elegido: ${n}`);
+  for (const a of elegidos) {
+    await marcarAsiento(page, a, nPisos);
+    resultado.asientos.push(a.numero);
+    log(`Asiento: ${a.numero} (piso ${a.piso}${a.ventana ? ', ventana' : ''})`);
   }
-  await page.getByRole('button', { name: SELECTORES.botonContinuar }).first().click();
+  await page.getByText(SELECTORES.botonContinuar).first().click();
+  await page.locator(SELECTORES.pasajero.fila).first().waitFor({ timeout: 30_000 });
 }
 
 async function llenarPasajeros(page) {
-  for (const [idx, p] of config.pasajeros.slice(0, config.cantidadPasajes).entries()) {
-    for (const [clave, patron] of Object.entries(SELECTORES.campos)) {
-      if (!p[clave]) continue;
-      const campo = page.getByLabel(patron).or(page.getByPlaceholder(patron)).nth(idx);
-      if (await campo.isVisible().catch(() => false)) await campo.fill(p[clave]);
-    }
+  const filas = page.locator(SELECTORES.pasajero.fila);
+  for (const [i, p] of config.pasajeros.slice(0, config.cantidadPasajes).entries()) {
+    const fila = filas.nth(i);
+    await fila.locator(SELECTORES.pasajero.documento).fill(p.rut);
+    await fila.locator(SELECTORES.pasajero.nombre).nth(0).fill(p.nombre);
+    await fila.locator(SELECTORES.pasajero.nombre).nth(1).fill(p.apellido);
   }
-  log('Datos de pasajeros completados');
+  const titular = config.pasajeros[0];
+  const emails = page.locator(SELECTORES.contacto.email);
+  await emails.nth(0).fill(titular.email);
+  await emails.nth(1).fill(titular.email);
+  await page.locator(SELECTORES.contacto.telefono).first().fill(titular.telefono.replace(/\D/g, '').replace(/^56/, ''));
+  await page.locator(SELECTORES.webpay).first().click().catch(() => log('No pude marcar Webpay; elígelo tú'));
+  log('Datos de pasajeros completados y Webpay seleccionado');
 }
 
 const resultado = { ok: false, origen: config.origen, destino: config.destino, fecha: config.fecha, salida: null, asientos: [] };
@@ -224,6 +228,7 @@ async function main() {
   const navegador = await chromium.launchPersistentContext(ruta('./perfil-navegador/'), {
     headless,
     locale: 'es-CL',
+    userAgent: USER_AGENT,
     viewport: { width: 1366, height: 900 },
   });
   const page = navegador.pages()[0] ?? (await navegador.newPage());
@@ -231,53 +236,47 @@ async function main() {
     console.log(`\n⏸  ${msg}`);
     if (!interactivo) return;
     const consola = createInterface({ input: process.stdin, output: process.stdout });
-    await consola.question('   Presiona Enter para continuar... ');
+    await consola.question('   Presiona Enter para cerrar el navegador... ');
     consola.close();
   };
 
   try {
-    await page.goto(URL_INICIO, { waitUntil: 'domcontentloaded' });
-    // Cierra banners de cookies / popups si aparecen
-    await page.getByRole('button', { name: /aceptar|entendido|cerrar/i }).first().click({ timeout: 4000 }).catch(() => {});
-
-    await elegirCiudad(page, SELECTORES.origen, config.origen);
-    await elegirCiudad(page, SELECTORES.destino, config.destino);
-    await elegirFecha(page, config.fecha);
-    await page.getByRole('button', { name: SELECTORES.botonBuscar }).first().click();
+    await buscar(page);
 
     if (config.listar) {
-      const { servicios } = await leerServicios(page);
-      resultado.servicios = servicios.map(({ i, ...s }) => s);
+      resultado.servicios = (await leerServicios(page)).map(({ i, ...s }) => s);
       await page.screenshot({ path: ruta('./capturas/horarios.png'), fullPage: true });
       resultado.ok = true;
-      servicios.forEach((s) => log(`${s.hora}  ${s.agotado ? 'AGOTADO' : s.precio ?? ''}  ${s.detalle}`));
+      resultado.servicios.forEach((s) => log(`${s.hora} → ${s.llegada}  ${s.empresa ?? ''}  ${s.agotado ? 'AGOTADO' : s.precio ?? ''}`));
       return;
     }
 
     await elegirServicio(page);
     if (config.verAsientos) {
-      const { numeros } = await leerAsientosLibres(page);
-      resultado.asientosLibres = numeros.map((n) => ({ numero: n, ventana: esVentana(n) }));
-      await page.screenshot({ path: ruta('./capturas/asientos.png'), fullPage: true });
+      resultado.asientosLibres = (await leerAsientos(page))
+        .filter((a) => a.libre && (!config.piso || a.piso === config.piso))
+        .map(({ libre, ...a }) => a);
+      await page.locator(SELECTORES.pisos).nth((config.piso ?? 1) - 1).click().catch(() => {});
+      await page.locator(SELECTORES.mapaAsientos).first().screenshot({ path: ruta('./capturas/asientos.png') });
       resultado.ok = true;
-      log(`Asientos libres: ${numeros.join(', ')}`);
+      log(`Asientos libres: ${resultado.asientosLibres.map((a) => a.numero + (a.ventana ? 'v' : '')).join(', ')}  (v = ventana)`);
       return;
     }
+
     await elegirAsientos(page);
     await llenarPasajeros(page);
-
-    await page.getByText(SELECTORES.indicadoresPago).first().waitFor({ timeout: 60_000 }).catch(() => {});
+    resultado.reservaVence = (await page.locator(SELECTORES.contador).first().innerText().catch(() => '')).trim() || null;
     await page.screenshot({ path: ruta('./capturas/antes-de-pagar.png'), fullPage: true });
     resultado.ok = true;
     resultado.urlPago = page.url();
-    log(`Listo para pagar: ${resultado.urlPago}`);
-    await pausa('Revisa el resumen y completa el PAGO tú mismo en el navegador. Cuando termines, vuelve aquí.');
+    log(`Listo para pagar (los asientos quedan retenidos ${resultado.reservaVence ?? 'unos minutos'})`);
+    await pausa('Acepta los términos, presiona PAGAR y completa Webpay en el navegador.');
   } catch (err) {
     resultado.error = err.message;
     resultado.urlError = page.url();
     console.error('\n✖', err.message);
     await page.screenshot({ path: ruta('./capturas/error.png'), fullPage: true }).catch(() => {});
-    await pausa('Algo cambió en el sitio. Puedes terminar el paso a mano en el navegador (captura en capturas/error.png).');
+    await pausa('Algo falló. Puedes terminar el paso a mano en el navegador (captura en capturas/error.png).');
   } finally {
     writeFileSync(ruta('./capturas/resultado.json'), JSON.stringify(resultado, null, 2));
     await navegador.close();
