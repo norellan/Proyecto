@@ -46,7 +46,7 @@ const SELECTORES = {
     email: '.passenger-input-personal-details input[type="email"]', // 1º correo, 2º confirmación
     telefono: '.passenger-input-personal-details input[type="tel"]',
   },
-  webpay: '.webpay-payment-method:has(img[alt*="webpay"]) label',
+  webpay: '.webpay-payment-method:has(img[alt*="webpay"]) input[type="radio"]',
   contador: '.countdown-counter',
 };
 
@@ -218,8 +218,10 @@ async function llenarPasajeros(page) {
   await emails.nth(0).fill(titular.email);
   await emails.nth(1).fill(titular.email);
   await page.locator(SELECTORES.contacto.telefono).first().fill(titular.telefono.replace(/\D/g, '').replace(/^56/, ''));
-  await page.locator(SELECTORES.webpay).first().click().catch(() => log('No pude marcar Webpay; elígelo tú'));
-  log('Datos de pasajeros completados y Webpay seleccionado');
+  log('Datos de pasajeros completados');
+  // El radio real está tapado por un círculo dibujado encima, por eso el clic va forzado.
+  const webpay = await page.locator(SELECTORES.webpay).first().check({ force: true, timeout: 5000 }).then(() => true, () => false);
+  log(webpay ? 'Webpay seleccionado' : 'No pude marcar Webpay; elígelo tú');
 }
 
 const resultado = { ok: false, origen: config.origen, destino: config.destino, fecha: config.fecha, salida: null, asientos: [] };
