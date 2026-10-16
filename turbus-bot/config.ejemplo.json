@@ -12,6 +12,13 @@
       "rut": "11111111-1",
       "email": "correo@ejemplo.cl",
       "telefono": "+56912345678"
+    },
+    {
+      "nombre": "Acompañante",
+      "apellido": "Apellido",
+      "rut": "22222222-2",
+      "email": "otro@ejemplo.cl",
+      "telefono": "+56987654321"
     }
   ]
 }

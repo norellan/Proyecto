@@ -43,6 +43,16 @@ En una sesión de Claude Code en la nube sobre este repo, el hook `.claude/hooks
 - El dominio `www.turbus.cl` tiene que estar permitido en el acceso a red del entorno.
 - Argumentos: `--fecha AAAA-MM-DD --hora HH:MM --pasajes N --origen X --destino Y --asiento ventana`.
 
+### Elegir día, hora y asiento paso a paso
+
+```bash
+npm run comprar -- --fecha 2026-10-23 --listar                           # 1) horarios y precios del día
+npm run comprar -- --fecha 2026-10-23 --salida 11:00 --ver-asientos      # 2) asientos libres de ese bus
+npm run comprar -- --fecha 2026-10-23 --salida 11:00 --numeros 12,13     # 3) toma esos asientos → página de pago
+```
+
+Cada paso deja `capturas/resultado.json` y una captura (`horarios.png`, `asientos.png`, `antes-de-pagar.png`).
+
 ## Prueba
 
 `npm test` recorre el flujo completo contra `test/sitio-simulado.html`, un sitio local que imita el proceso de compra.

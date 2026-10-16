@@ -52,6 +52,11 @@ function cargarConfig() {
     options: {
       config: { type: 'string' }, origen: { type: 'string' }, destino: { type: 'string' },
       fecha: { type: 'string' }, hora: { type: 'string' }, pasajes: { type: 'string' }, asiento: { type: 'string' },
+      // Elección paso a paso (útil desde el chat / celular):
+      listar: { type: 'boolean' },         // 1) solo lista los horarios del día
+      salida: { type: 'string' },          // 2) toma exactamente ese horario (HH:MM)
+      'ver-asientos': { type: 'boolean' }, //    ...y solo lista los asientos libres
+      numeros: { type: 'string' },         // 3) toma esos asientos (ej: 8,12) y avanza hasta el pago
     },
   });
   const archivo = values.config ? values.config : ruta('./config.json');
@@ -66,7 +71,13 @@ function cargarConfig() {
     ...(values.hora && { horaPreferida: values.hora }),
     ...(values.pasajes && { cantidadPasajes: Number(values.pasajes) }),
     ...(values.asiento && { preferenciaAsiento: values.asiento }),
+    listar: Boolean(values.listar),
+    salida: values.salida,
+    verAsientos: Boolean(values['ver-asientos']),
+    numeros: values.numeros ? values.numeros.split(',').map((n) => n.trim()).filter(Boolean) : null,
   };
+  if (c.numeros) c.cantidadPasajes = c.numeros.length;
+  if (c.salida && !/^\d{1,2}:\d{2}$/.test(c.salida)) throw new Error(`Salida inválida "${c.salida}" (usa HH:MM)`);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(c.fecha)) throw new Error(`Fecha inválida "${c.fecha}" (usa AAAA-MM-DD)`);
   if (!/^\d{1,2}:\d{2}$/.test(c.horaPreferida)) throw new Error(`Hora inválida "${c.horaPreferida}" (usa HH:MM)`);
   if (c.pasajeros.length < c.cantidadPasajes) throw new Error(`Faltan datos: ${c.cantidadPasajes} pasajes pero ${c.pasajeros.length} pasajeros`);
@@ -127,46 +138,71 @@ async function elegirFecha(page, fechaISO) {
 
 const minutos = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
 
-async function elegirServicio(page) {
+async function leerServicios(page) {
   await page.locator(SELECTORES.tarjetaServicio).first().waitFor({ timeout: 30_000 });
   const tarjetas = page.locator(SELECTORES.tarjetaServicio).filter({ hasText: /\d{1,2}:\d{2}/ });
-  const n = await tarjetas.count();
-  if (!n) throw new Error('No hay servicios disponibles para esa fecha');
-
-  const objetivo = minutos(config.horaPreferida);
-  let mejor = { i: -1, dif: Infinity, hora: '' };
-  for (let i = 0; i < n; i++) {
-    const texto = await tarjetas.nth(i).innerText();
+  const servicios = [];
+  for (let i = 0; i < (await tarjetas.count()); i++) {
+    const texto = (await tarjetas.nth(i).innerText()).replace(/\s+/g, ' ').trim();
     const hora = texto.match(/\b(\d{1,2}:\d{2})\b/)?.[1];
-    if (/agotado|sin asientos/i.test(texto) || !hora) continue;
-    const dif = Math.abs(minutos(hora) - objetivo);
-    if (dif < mejor.dif) mejor = { i, dif, hora };
+    if (!hora) continue;
+    servicios.push({
+      i, hora,
+      agotado: /agotado|sin asientos/i.test(texto),
+      precio: texto.match(/\$\s?[\d.]+/)?.[0] ?? null,
+      detalle: texto.replace(/seleccionar|elegir|comprar|ver asientos/gi, '').trim(),
+    });
   }
-  if (mejor.i < 0) throw new Error('Todos los servicios están agotados');
-  log(`Servicio elegido: salida ${mejor.hora} (preferida ${config.horaPreferida})`);
+  if (!servicios.length) throw new Error('No hay servicios para esa fecha');
+  return { tarjetas, servicios };
+}
+
+async function elegirServicio(page) {
+  const { tarjetas, servicios } = await leerServicios(page);
+  const disponibles = servicios.filter((s) => !s.agotado);
+  let mejor;
+  if (config.salida) {
+    mejor = servicios.find((s) => minutos(s.hora) === minutos(config.salida));
+    if (!mejor) throw new Error(`No hay salida a las ${config.salida}. Horarios: ${servicios.map((s) => s.hora).join(', ')}`);
+    if (mejor.agotado) throw new Error(`La salida de las ${config.salida} está agotada`);
+  } else {
+    if (!disponibles.length) throw new Error('Todos los servicios están agotados');
+    const objetivo = minutos(config.horaPreferida);
+    mejor = disponibles.reduce((a, b) => (Math.abs(minutos(b.hora) - objetivo) < Math.abs(minutos(a.hora) - objetivo) ? b : a));
+  }
+  log(`Servicio elegido: salida ${mejor.hora}${config.salida ? '' : ` (preferida ${config.horaPreferida})`}`);
   resultado.salida = mejor.hora;
   const tarjeta = tarjetas.nth(mejor.i);
   const boton = tarjeta.getByRole('button', { name: SELECTORES.botonElegirServicio });
   await ((await boton.count()) ? boton.first() : tarjeta).click();
 }
 
-async function elegirAsientos(page) {
+async function leerAsientosLibres(page) {
   const libres = page.locator(SELECTORES.asientoLibre);
   await libres.first().waitFor({ timeout: 30_000 });
-  const total = await libres.count();
-  // Asientos de ventana: en buses 2+2 suelen ser los números ≡ 1 o 0 (mod 4).
-  const orden = [];
-  for (let i = 0; i < total; i++) {
-    const num = Number((await libres.nth(i).innerText().catch(() => '')).trim());
-    const ventana = num && (num % 4 === 1 || num % 4 === 0);
-    orden.push({ i, prioridad: config.preferenciaAsiento === 'ventana' && ventana ? 0 : 1 });
+  const numeros = [];
+  for (let i = 0; i < (await libres.count()); i++) numeros.push((await libres.nth(i).innerText().catch(() => '')).trim());
+  return { libres, numeros };
+}
+
+const esVentana = (n) => Number(n) > 0 && (Number(n) % 4 === 1 || Number(n) % 4 === 0);
+
+async function elegirAsientos(page) {
+  const { libres, numeros } = await leerAsientosLibres(page);
+  let elegidos = config.numeros;
+  if (elegidos) {
+    const ocupados = elegidos.filter((n) => !numeros.includes(n));
+    if (ocupados.length) throw new Error(`Asiento(s) ${ocupados.join(', ')} no disponibles. Libres: ${numeros.join(', ')}`);
+  } else {
+    // Asientos de ventana: en buses 2+2 suelen ser los números ≡ 1 o 0 (mod 4).
+    const prioridad = (n) => (config.preferenciaAsiento === 'ventana' && esVentana(n) ? 0 : 1);
+    elegidos = [...numeros].sort((x, y) => prioridad(x) - prioridad(y)).slice(0, config.cantidadPasajes);
   }
-  orden.sort((x, y) => x.prioridad - y.prioridad);
-  for (const { i } of orden.slice(0, config.cantidadPasajes)) {
-    const numero = (await libres.nth(i).innerText().catch(() => '?')).trim();
-    await libres.nth(i).click();
-    resultado.asientos.push(numero);
-    log(`Asiento elegido: ${numero}`);
+  for (const n of elegidos) {
+    // Se busca por número (no por índice) porque al marcar un asiento la lista de libres puede cambiar.
+    await libres.filter({ hasText: new RegExp(`^\\s*${n}\\s*$`) }).first().click();
+    resultado.asientos.push(n);
+    log(`Asiento elegido: ${n}`);
   }
   await page.getByRole('button', { name: SELECTORES.botonContinuar }).first().click();
 }
@@ -209,7 +245,24 @@ async function main() {
     await elegirFecha(page, config.fecha);
     await page.getByRole('button', { name: SELECTORES.botonBuscar }).first().click();
 
+    if (config.listar) {
+      const { servicios } = await leerServicios(page);
+      resultado.servicios = servicios.map(({ i, ...s }) => s);
+      await page.screenshot({ path: ruta('./capturas/horarios.png'), fullPage: true });
+      resultado.ok = true;
+      servicios.forEach((s) => log(`${s.hora}  ${s.agotado ? 'AGOTADO' : s.precio ?? ''}  ${s.detalle}`));
+      return;
+    }
+
     await elegirServicio(page);
+    if (config.verAsientos) {
+      const { numeros } = await leerAsientosLibres(page);
+      resultado.asientosLibres = numeros.map((n) => ({ numero: n, ventana: esVentana(n) }));
+      await page.screenshot({ path: ruta('./capturas/asientos.png'), fullPage: true });
+      resultado.ok = true;
+      log(`Asientos libres: ${numeros.join(', ')}`);
+      return;
+    }
     await elegirAsientos(page);
     await llenarPasajeros(page);
 
