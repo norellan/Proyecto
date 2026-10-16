@@ -1,0 +1,24 @@
+{
+  "origen": "Santiago",
+  "destino": "El Tabo",
+  "fecha": "2026-10-23",
+  "horaPreferida": "09:00",
+  "cantidadPasajes": 1,
+  "preferenciaAsiento": "ventana",
+  "pasajeros": [
+    {
+      "nombre": "Nombre",
+      "apellido": "Apellido",
+      "rut": "11111111-1",
+      "email": "correo@ejemplo.cl",
+      "telefono": "+56912345678"
+    },
+    {
+      "nombre": "Acompañante",
+      "apellido": "Apellido",
+      "rut": "22222222-2",
+      "email": "otro@ejemplo.cl",
+      "telefono": "+56987654321"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Sitio simulado (pruebas)</title>
+<style>li{display:inline-block;width:30px;cursor:pointer}ul{display:block}</style>
+</head><body>
+<!-- Imita la estructura real de turbus.cl (clases y flujo) para probar comprar.js sin conexión. NO es el sitio real. -->
+<div class="services-list-container" id="lista"></div>
+<div id="booking" hidden>
+  <div class="countdown-counter"><span>08:59</span></div>
+  <div id="filas"></div>
+  <table class="passenger-input-personal-details"><tr>
+    <td><input type="email"></td><td><input type="email"></td><td><input type="tel" placeholder="9XXXXXXXX"></td></tr></table>
+  <div class="webpay-payment-method"><label><input type="radio" id="wp"><div style="position:relative;margin-top:-20px;width:20px;height:20px;background:#fff"></div></label><img alt="webpay_logo_new"></div>
+  <button>PAGAR</button>
+</div>
+<script>
+const servicios = [['07:30','09:30','Turbus','$6.500',true],['08:45','10:45','Turbus','$6.500'],['08:45','10:30','Cóndor Bus','$5.500'],['11:00','13:00','Turbus','$7.500']];
+const ocupados = [1, 4, 5, 18];
+const params = new URLSearchParams(location.search);
+const ok = /santiago,-chile\/el-tabo,-chile/.test(location.pathname) && params.get('date_onward') === '23-10-2026';
+lista.innerHTML = ok ? servicios.map(([s, l, e, p, ag]) => `<div class="service-item_service_item_outer__X"><div>Salida Vie, 23/10 ${s} AM Llegada ${l} AM Semi Cama Desde ${p} ${ag ? 'Agotado' : ''}<button class="kupos-button"><span>COMPRAR</span></button> ${e}</div></div>`).join('') : '';
+document.querySelectorAll('.kupos-button').forEach((b) => b.onclick = () => {
+  const piso = (desde) => Array.from({ length: 4 }, (_, f) => { const n = desde + f * 4;
+    return `<ul>${[n, n + 1, null, n + 3, n + 2].map((x) => x === null ? '<li class="gw"> </li>' :
+      `<li><span class="seat-number-css">${x}</span><div class="seat-sprite ${ocupados.includes(x) ? 'icon-seat_reserved' : 'icon-seat_available'}"></div></li>`).join('')}</ul>`; }).join('');
+  b.closest('.service-item_service_item_outer__X').insertAdjacentHTML('beforeend', `<div class="coach-layout-container">
+    <div class="floor-buttons"><a id="p1">Piso #1</a><a id="p2">Piso #2</a></div><div class="coach-table" id="tabla">${piso(1)}</div>
+    <div id="continuar">CONTINUAR: <span id="n">0</span></div></div>`);
+  const sel = new Set();
+  const pintar = (desde) => { tabla.innerHTML = piso(desde); tabla.querySelectorAll('li:has(.seat-number-css)').forEach((li) => li.onclick = () => {
+    if (li.querySelector('[class*="_available"]')) { sel.add(li.innerText.trim()); n.textContent = sel.size; } }); };
+  pintar(1); p1.onclick = () => pintar(1); p2.onclick = () => pintar(17);
+  continuar.onclick = () => {
+    if (!sel.size) return;
+    lista.hidden = true; booking.hidden = false; document.body.dataset.asientos = [...sel].join(',');
+    filas.innerHTML = [...sel].map(() => '<div class="local-inputs-details"><div class="rut-input"><input></div><div class="name-input"><input></div><div class="name-input"><input></div></div>').join('');
+  };
+});
+</script></body></html>

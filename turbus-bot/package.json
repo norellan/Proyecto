@@ -1,0 +1,14 @@
+{
+  "name": "turbus-bot",
+  "version": "1.0.0",
+  "description": "Automatiza la búsqueda y reserva de pasajes Tur Bus (Santiago → El Tabo) hasta la página de pago",
+  "type": "module",
+  "scripts": {
+    "comprar": "node comprar.js",
+    "grabar": "playwright codegen https://www.turbus.cl",
+    "test": "node test/probar.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.56.1"
+  }
+}
