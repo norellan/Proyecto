@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Sitio simulado (pruebas)</title>
+<style>.seat{display:inline-block;width:32px;margin:2px;border:1px solid #333;text-align:center;cursor:pointer}.occupied{background:#999}</style>
+</head><body>
+<!-- Imita a grandes rasgos el flujo de compra; NO es el sitio real de Tur Bus. -->
+<div id="cookies"><button>Aceptar</button></div>
+<section id="busqueda">
+  <label>Origen <input id="origen" list="x" autocomplete="off"></label>
+  <label>Destino <input id="destino" autocomplete="off"></label>
+  <ul id="sug"></ul>
+  <label>Fecha de ida <input id="fecha" placeholder="dd/mm/aaaa"></label>
+  <button id="buscar">Buscar</button>
+</section>
+<section id="servicios" hidden></section>
+<section id="asientos" hidden><div id="mapa"></div><button id="cont">Continuar</button></section>
+<section id="pasajero" hidden>
+  <label>Nombre <input></label><label>Apellido <input></label><label>RUT <input></label>
+  <label>Correo <input></label><label>Teléfono <input></label>
+  <h2>Total a pagar: $8.900</h2><button>Ir a Webpay</button>
+</section>
+<script>
+const ciudades=['Santiago (Terminal Alameda)','Santiago (Terminal San Borja)','El Tabo','El Quisco','Algarrobo'];
+document.querySelector('#cookies button').onclick=()=>document.getElementById('cookies').remove();
+let activo;
+for (const id of ['origen','destino']) document.getElementById(id).addEventListener('input',e=>{
+  activo=e.target; const q=e.target.value.toLowerCase(); const ul=document.getElementById('sug'); ul.innerHTML='';
+  if(q.length<2) return;
+  ciudades.filter(c=>c.toLowerCase().includes(q)).forEach(c=>{const li=document.createElement('li');li.setAttribute('role','option');li.textContent=c;li.onclick=()=>{activo.value=c;ul.innerHTML='';};ul.appendChild(li);});
+});
+document.getElementById('buscar').onclick=()=>{
+  const ok=/santiago/i.test(origen.value)&&/tabo/i.test(destino.value)&&/^\d\d\/\d\d\/\d{4}$/.test(fecha.value);
+  const s=document.getElementById('servicios'); s.hidden=false;
+  if(!ok){s.textContent='Datos de búsqueda inválidos';return;}
+  s.innerHTML=[['07:30','Agotado'],['08:45','12 asientos'],['11:00','20 asientos'],['15:30','5 asientos']].map(([h,d])=>
+    `<div class="service-card"><b>${h}</b> Santiago → El Tabo · ${d} · $8.900 <button>Seleccionar</button></div>`).join('');
+  s.querySelectorAll('button').forEach(b=>b.onclick=()=>{s.dataset.elegido=b.parentElement.querySelector('b').textContent;document.getElementById('asientos').hidden=false;
+    mapa.innerHTML=Array.from({length:20},(_,i)=>`<span class="seat ${[1,4,5].includes(i+1)?'occupied':''}">${i+1}</span>`).join('');
+    mapa.querySelectorAll('.seat:not(.occupied)').forEach(x=>x.onclick=()=>x.classList.toggle('selected'));});
+};
+cont.onclick=()=>{document.getElementById('pasajero').hidden=false;};
+</script></body></html>

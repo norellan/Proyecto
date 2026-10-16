@@ -34,3 +34,15 @@ Por ejemplo, para que corra los lunes a las 8:00 con cron (`crontab -e`):
 ```
 0 8 * * 1 cd /ruta/a/turbus-bot && DISPLAY=:0 npm run comprar
 ```
+
+## Desde la app de Claude (nube / celular)
+
+En una sesión de Claude Code en la nube sobre este repo, el hook `.claude/hooks/session-start.sh` instala Playwright solo. Basta con pedir: *"cómprame pasaje a El Tabo el viernes a las 9"*. Claude ejecuta el script, que corre sin pantalla (headless), y te envía la captura de la página de pago.
+
+- Para no repetir tus datos cada vez, guárdalos como variable de entorno `TURBUS_CONFIG` (el JSON de `config.ejemplo.json`) en la configuración del entorno.
+- El dominio `www.turbus.cl` tiene que estar permitido en el acceso a red del entorno.
+- Argumentos: `--fecha AAAA-MM-DD --hora HH:MM --pasajes N --origen X --destino Y --asiento ventana`.
+
+## Prueba
+
+`npm test` recorre el flujo completo contra `test/sitio-simulado.html`, un sitio local que imita el proceso de compra.

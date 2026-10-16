@@ -5,16 +5,25 @@
 // Uso:
 //   npm install
 //   cp config.ejemplo.json config.json   # y edita tus datos
-//   npm run comprar
+//   npm run comprar -- --fecha 2026-10-23 --hora 09:00 --pasajes 1
+//
+// Funciona en tu computador (Chrome visible, espera tu Enter) y en una sesión
+// de Claude en la nube (sin pantalla: corre headless, no espera teclado y deja
+// capturas + resultado.json en capturas/).
+//
+// Datos: config.json, o la variable de entorno TURBUS_CONFIG con el mismo JSON
+// (útil como secreto del entorno en la nube). Los argumentos --origen, --destino,
+// --fecha, --hora, --pasajes y --asiento sobrescriben lo del config.
 //
 // Si Tur Bus cambia su sitio, ajusta los textos/selectores del bloque SELECTORES
 // (puedes descubrirlos con `npm run grabar`).
 
 import { chromium } from 'playwright';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 
-const URL_INICIO = 'https://www.turbus.cl/';
+const URL_INICIO = process.env.TURBUS_URL || 'https://www.turbus.cl/';
 
 const SELECTORES = {
   origen: [/origen/i, /desde/i],
@@ -36,8 +45,39 @@ const SELECTORES = {
   indicadoresPago: /webpay|medio de pago|pagar|total a pagar/i,
 };
 
-const config = JSON.parse(readFileSync(new URL('./config.json', import.meta.url), 'utf8'));
-mkdirSync(new URL('./capturas/', import.meta.url), { recursive: true });
+const ruta = (p) => new URL(p, import.meta.url).pathname;
+
+function cargarConfig() {
+  const { values } = parseArgs({
+    options: {
+      config: { type: 'string' }, origen: { type: 'string' }, destino: { type: 'string' },
+      fecha: { type: 'string' }, hora: { type: 'string' }, pasajes: { type: 'string' }, asiento: { type: 'string' },
+    },
+  });
+  const archivo = values.config ? values.config : ruta('./config.json');
+  const base = process.env.TURBUS_CONFIG
+    ? JSON.parse(process.env.TURBUS_CONFIG)
+    : existsSync(archivo) ? JSON.parse(readFileSync(archivo, 'utf8')) : JSON.parse(readFileSync(ruta('./config.ejemplo.json'), 'utf8'));
+  const c = {
+    ...base,
+    ...(values.origen && { origen: values.origen }),
+    ...(values.destino && { destino: values.destino }),
+    ...(values.fecha && { fecha: values.fecha }),
+    ...(values.hora && { horaPreferida: values.hora }),
+    ...(values.pasajes && { cantidadPasajes: Number(values.pasajes) }),
+    ...(values.asiento && { preferenciaAsiento: values.asiento }),
+  };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(c.fecha)) throw new Error(`Fecha inválida "${c.fecha}" (usa AAAA-MM-DD)`);
+  if (!/^\d{1,2}:\d{2}$/.test(c.horaPreferida)) throw new Error(`Hora inválida "${c.horaPreferida}" (usa HH:MM)`);
+  if (c.pasajeros.length < c.cantidadPasajes) throw new Error(`Faltan datos: ${c.cantidadPasajes} pasajes pero ${c.pasajeros.length} pasajeros`);
+  return c;
+}
+
+const config = cargarConfig();
+// Sin pantalla (sesión en la nube) → headless y sin esperar el teclado.
+const interactivo = process.stdin.isTTY && !process.env.CI && process.env.HEADLESS !== '1';
+const headless = process.env.HEADLESS === '1' || (process.platform === 'linux' && !process.env.DISPLAY);
+mkdirSync(ruta('./capturas/'), { recursive: true });
 
 const log = (...m) => console.log('›', ...m);
 
@@ -104,6 +144,7 @@ async function elegirServicio(page) {
   }
   if (mejor.i < 0) throw new Error('Todos los servicios están agotados');
   log(`Servicio elegido: salida ${mejor.hora} (preferida ${config.horaPreferida})`);
+  resultado.salida = mejor.hora;
   const tarjeta = tarjetas.nth(mejor.i);
   const boton = tarjeta.getByRole('button', { name: SELECTORES.botonElegirServicio });
   await ((await boton.count()) ? boton.first() : tarjeta).click();
@@ -122,8 +163,10 @@ async function elegirAsientos(page) {
   }
   orden.sort((x, y) => x.prioridad - y.prioridad);
   for (const { i } of orden.slice(0, config.cantidadPasajes)) {
+    const numero = (await libres.nth(i).innerText().catch(() => '?')).trim();
     await libres.nth(i).click();
-    log(`Asiento elegido: ${(await libres.nth(i).innerText().catch(() => '?')).trim()}`);
+    resultado.asientos.push(numero);
+    log(`Asiento elegido: ${numero}`);
   }
   await page.getByRole('button', { name: SELECTORES.botonContinuar }).first().click();
 }
@@ -139,15 +182,22 @@ async function llenarPasajeros(page) {
   log('Datos de pasajeros completados');
 }
 
+const resultado = { ok: false, origen: config.origen, destino: config.destino, fecha: config.fecha, salida: null, asientos: [] };
+
 async function main() {
-  const navegador = await chromium.launchPersistentContext(new URL('./perfil-navegador/', import.meta.url).pathname, {
-    headless: false,
+  const navegador = await chromium.launchPersistentContext(ruta('./perfil-navegador/'), {
+    headless,
     locale: 'es-CL',
     viewport: { width: 1366, height: 900 },
   });
   const page = navegador.pages()[0] ?? (await navegador.newPage());
-  const consola = createInterface({ input: process.stdin, output: process.stdout });
-  const pausa = (msg) => consola.question(`\n⏸  ${msg}\n   Presiona Enter para continuar... `);
+  const pausa = async (msg) => {
+    console.log(`\n⏸  ${msg}`);
+    if (!interactivo) return;
+    const consola = createInterface({ input: process.stdin, output: process.stdout });
+    await consola.question('   Presiona Enter para continuar... ');
+    consola.close();
+  };
 
   try {
     await page.goto(URL_INICIO, { waitUntil: 'domcontentloaded' });
@@ -163,16 +213,22 @@ async function main() {
     await elegirAsientos(page);
     await llenarPasajeros(page);
 
-    await page.screenshot({ path: new URL('./capturas/antes-de-pagar.png', import.meta.url).pathname, fullPage: true });
     await page.getByText(SELECTORES.indicadoresPago).first().waitFor({ timeout: 60_000 }).catch(() => {});
+    await page.screenshot({ path: ruta('./capturas/antes-de-pagar.png'), fullPage: true });
+    resultado.ok = true;
+    resultado.urlPago = page.url();
+    log(`Listo para pagar: ${resultado.urlPago}`);
     await pausa('Revisa el resumen y completa el PAGO tú mismo en el navegador. Cuando termines, vuelve aquí.');
   } catch (err) {
+    resultado.error = err.message;
+    resultado.urlError = page.url();
     console.error('\n✖', err.message);
-    await page.screenshot({ path: new URL('./capturas/error.png', import.meta.url).pathname, fullPage: true }).catch(() => {});
+    await page.screenshot({ path: ruta('./capturas/error.png'), fullPage: true }).catch(() => {});
     await pausa('Algo cambió en el sitio. Puedes terminar el paso a mano en el navegador (captura en capturas/error.png).');
   } finally {
-    consola.close();
+    writeFileSync(ruta('./capturas/resultado.json'), JSON.stringify(resultado, null, 2));
     await navegador.close();
+    process.exitCode = resultado.ok ? 0 : 1;
   }
 }
 
